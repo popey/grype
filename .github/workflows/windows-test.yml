@@ -28,7 +28,7 @@ jobs:
           dir 
           cd ..
           mkdir .tool
-          copy .\tmp-binny\binny .tool\binny
+          copy .\tmp-binny\binny.exe .tool\binny.exe
 
       - name: Build and Run Grype
         run: |
