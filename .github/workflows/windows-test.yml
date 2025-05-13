@@ -22,6 +22,9 @@ jobs:
           
       - name: Build and Run Grype
         run: |
-          go run cmd\grype version
-          go run cmd\grype db update
+          set
+          dir .
+          go version
+          go run .\cmd\grype version
+          go run .\cmd\grype db update
                 
