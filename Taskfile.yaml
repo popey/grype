@@ -12,25 +12,64 @@ vars:
   NEXT_VERSION: VERSION
 
   # used for snapshot builds
+  # Cross-platform OS detection
   OS:
-    sh: uname -s | tr '[:upper:]' '[:lower:]'
+    sh: |
+      if [ -z "$RUNNER_OS" ]; then
+        if [ -n "$OS" ] && [ "$OS" = "Windows_NT" ]; then
+          echo "windows"
+        else
+          uname -s | tr '[:upper:]' '[:lower:]'
+        fi
+      else
+        echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]'
+      fi
+  # Cross-platform architecture detection
   ARCH:
     sh: |
-      [ "$(uname -m)" = "x86_64" ] && echo "amd64_v1" || echo $(uname -m)
+      if [ -z "$RUNNER_ARCH" ]; then
+        if [ -n "$OS" ] && [ "$OS" = "Windows_NT" ]; then
+          if [ "$PROCESSOR_ARCHITECTURE" = "AMD64" ]; then
+            echo "amd64_v1"
+          else
+            echo "$PROCESSOR_ARCHITECTURE" | tr '[:upper:]' '[:lower:]'
+          fi
+        else
+          [ "$(uname -m)" = "x86_64" ] && echo "amd64_v1" || echo $(uname -m)
+        fi
+      else
+        echo "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]'
+      fi
   PROJECT_ROOT:
-    sh: echo $PWD
+    sh: echo "{{.TASKFILE_DIR}}"
   # note: the snapshot dir must be a relative path starting with ./
-  SNAPSHOT_DIR: ./snapshot
-  SNAPSHOT_BIN: "{{ .PROJECT_ROOT }}/{{ .SNAPSHOT_DIR }}/{{ .OS }}-build_{{ .OS }}_{{ .ARCH }}/{{ .PROJECT }}"
-  SNAPSHOT_CMD: "{{ .TOOL_DIR }}/goreleaser release --config {{ .TMP_DIR }}/goreleaser.yaml --clean --snapshot --skip=publish --skip=sign"
-  BUILD_CMD:    "{{ .TOOL_DIR }}/goreleaser build   --config {{ .TMP_DIR }}/goreleaser.yaml --clean --snapshot --single-target"
-  RELEASE_CMD:  "{{ .TOOL_DIR }}/goreleaser release --clean --release-notes {{ .CHANGELOG }}"
+  SNAPSHOT_DIR: .{{.PATH_SEPARATOR}}snapshot
+  SNAPSHOT_BIN:
+    sh: |
+      if [ "{{.OS}}" = "windows" ]; then
+        echo "{{.PROJECT_ROOT}}{{.PATH_SEPARATOR}}{{.SNAPSHOT_DIR}}{{.PATH_SEPARATOR}}{{.OS}}-build_{{.OS}}_{{.ARCH}}{{.PATH_SEPARATOR}}{{.PROJECT}}.exe"
+      else
+        echo "{{.PROJECT_ROOT}}{{.PATH_SEPARATOR}}{{.SNAPSHOT_DIR}}{{.PATH_SEPARATOR}}{{.OS}}-build_{{.OS}}_{{.ARCH}}{{.PATH_SEPARATOR}}{{.PROJECT}}"
+      fi
+  # Use path_separator to ensure paths work on both Windows and Unix
+  SNAPSHOT_CMD: "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}goreleaser release --config {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml --clean --snapshot --skip=publish --skip=sign"
+  BUILD_CMD:    "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}goreleaser build   --config {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml --clean --snapshot --single-target"
+  RELEASE_CMD:  "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}goreleaser release --clean --release-notes {{.CHANGELOG}}"
   VERSION:
     sh: git describe --dirty --always --tags
 
   # used for install and acceptance testing
-  COMPARE_DIR: ./test/compare
+  COMPARE_DIR: .{{.PATH_SEPARATOR}}test{{.PATH_SEPARATOR}}compare
   COMPARE_TEST_IMAGE: centos:8.2.2004
+  
+  # Cross-platform script extensions
+  SCRIPT_EXT:
+    sh: |
+      if [ "{{.OS}}" = "windows" ]; then
+        echo ".bat"
+      else
+        echo ".sh"
+      fi
 
 env:
   SYFT_CHECK_FOR_APP_UPDATE: false
@@ -74,10 +113,15 @@ tasks:
     internal: true
     # desc: Get the binny tool
     generates:
-      - "{{ .TOOL_DIR }}/binny"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}binny{{if eq .OS \"windows\"}}.exe{{end}}"
     status:
-      - "test -f {{ .TOOL_DIR }}/binny"
-    cmd: "curl -sSfL https://raw.githubusercontent.com/anchore/binny/main/install.sh | sh -s -- -b .tool"
+      - "test -f {{.TOOL_DIR}}{{.PATH_SEPARATOR}}binny{{if eq .OS \"windows\"}}.exe{{end}}"
+    cmd: |
+      if [ "{{.OS}}" = "windows" ]; then
+        curl -sSfL https://raw.githubusercontent.com/anchore/binny/main/install.ps1 | powershell -Command "-"
+      else
+        curl -sSfL https://raw.githubusercontent.com/anchore/binny/main/install.sh | sh -s -- -b .tool
+      fi
     silent: true
 
   tools:
@@ -87,10 +131,10 @@ tasks:
       - bootstrap
     generates:
       - ".binny.yaml"
-      - "{{ .TOOL_DIR }}/*"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}*"
     status:
-      - "{{ .TOOL_DIR }}/binny check -v"
-    cmd: "{{ .TOOL_DIR }}/binny install -v"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}binny check -v"
+    cmd: "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}binny install -v"
     silent: true
 
   update-tools:
@@ -98,33 +142,43 @@ tasks:
     deps: [binny]
     generates:
       - ".binny.yaml"
-      - "{{ .TOOL_DIR }}/*"
-    cmd: "{{ .TOOL_DIR }}/binny update -v"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}*"
+    cmd: "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}binny update -v"
     silent: true
 
   update-quality-gate-db:
     desc: Update pinned version of quality gate database
     cmds:
-      - cmd: "go run cmd/grype/main.go db list -o json | jq -r '.[0].path' > test/quality/test-db"
+      - cmd: |
+          if [ "{{.OS}}" = "windows" ]; then
+            go run cmd{{.PATH_SEPARATOR}}grype{{.PATH_SEPARATOR}}main.go db list -o json | jq -r ".[0].path" > test{{.PATH_SEPARATOR}}quality{{.PATH_SEPARATOR}}test-db
+          else
+            go run cmd/grype/main.go db list -o json | jq -r '.[0].path' > test/quality/test-db
+          fi
         silent: true
 
   list-tools:
     desc: List all tools needed for CI and local development
     deps: [binny]
-    cmd: "{{ .TOOL_DIR }}/binny list"
+    cmd: "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}binny list"
     silent: true
 
   list-tool-updates:
     desc: List all tools that are not up to date relative to the binny config
     deps: [binny]
-    cmd: "{{ .TOOL_DIR }}/binny list --updates"
+    cmd: "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}binny list --updates"
     silent: true
 
   tmpdir:
     silent: true
     generates:
-      - "{{ .TMP_DIR }}"
-    cmd: "mkdir -p {{ .TMP_DIR }}"
+      - "{{.TMP_DIR}}"
+    cmd: |
+      if [ "{{.OS}}" = "windows" ]; then
+        mkdir -p {{.TMP_DIR}} 2> nul || exit 0
+      else
+        mkdir -p {{.TMP_DIR}}
+      fi
 
   ## Static analysis tasks #################################
 
@@ -133,7 +187,7 @@ tasks:
     deps: [tools]
     cmds:
       - gofmt -w -s .
-      - "{{ .TOOL_DIR }}/gosimports -local github.com/anchore -w ."
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}gosimports -local github.com/anchore -w ."
       - go mod tidy
 
   lint-fix:
@@ -141,7 +195,7 @@ tasks:
     deps: [tools]
     cmds:
       - task: format
-      - "{{ .TOOL_DIR }}/golangci-lint run --tests=false --fix"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}golangci-lint run --tests=false --fix"
 
   lint:
     desc: Run gofmt + golangci lint checks
@@ -149,43 +203,68 @@ tasks:
       BAD_FMT_FILES:
         sh: gofmt -l -s .
       BAD_FILE_NAMES:
-        sh: "find . | grep -e ':' | grep -v -e 'test/quality/.yardstick' -e 'test/quality/vulnerability-match-labels' || true"
+        sh: |
+          if [ "{{.OS}}" = "windows" ]; then
+            powershell -Command "Get-ChildItem -Path . -Recurse | Where-Object { $_.Name -match ':' } | Where-Object { $_.FullName -notmatch 'test\\quality\\.yardstick' -and $_.FullName -notmatch 'test\\quality\\vulnerability-match-labels' } | ForEach-Object { $_.FullName }"
+          else
+            find . | grep -e ':' | grep -v -e 'test/quality/.yardstick' -e 'test/quality/vulnerability-match-labels' || true
+          fi
     deps: [tools]
     cmds:
       # ensure there are no go fmt differences
-      - cmd: 'test -z "{{ .BAD_FMT_FILES }}" || (echo "files with gofmt issues: [{{ .BAD_FMT_FILES }}]"; exit 1)'
+      - cmd: 'test -z "{{.BAD_FMT_FILES}}" || (echo "files with gofmt issues: [{{.BAD_FMT_FILES}}]"; exit 1)'
         silent: true
       # ensure there are no files with ":" in it (a known back case in the go ecosystem)
-      - cmd: 'test -z "{{ .BAD_FILE_NAMES }}" || (echo "files with bad names: [{{ .BAD_FILE_NAMES }}]"; exit 1)'
+      - cmd: 'test -z "{{.BAD_FILE_NAMES}}" || (echo "files with bad names: [{{.BAD_FILE_NAMES}}]"; exit 1)'
         silent: true
       # run linting
-      - "{{ .TOOL_DIR }}/golangci-lint run --tests=false"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}golangci-lint run --tests=false"
 
   check-licenses:
     # desc: Ensure transitive dependencies are compliant with the current license policy
     deps: [tools]
-    cmd: "{{ .TOOL_DIR }}/bouncer check ./..."
+    cmd: "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}bouncer check .{{.PATH_SEPARATOR}}..."
 
   check-go-mod-tidy:
     # desc: Ensure go.mod and go.sum are up to date
     cmds:
-      - cmd: .github/scripts/go-mod-tidy-check.sh && echo "go.mod and go.sum are tidy!"
+      - cmd: |
+          if [ "{{.OS}}" = "windows" ]; then
+            powershell -ExecutionPolicy Bypass -File .github{{.PATH_SEPARATOR}}scripts{{.PATH_SEPARATOR}}go-mod-tidy-check.ps1 && echo "go.mod and go.sum are tidy!"
+          else
+            .github/scripts/go-mod-tidy-check.sh && echo "go.mod and go.sum are tidy!"
+          fi
         silent: true
 
   check-json-schema-drift:
     desc: Ensure there is no drift between the JSON schema and the code
     cmds:
-      - .github/scripts/json-schema-drift-check.sh
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          powershell -ExecutionPolicy Bypass -File .github{{.PATH_SEPARATOR}}scripts{{.PATH_SEPARATOR}}json-schema-drift-check.ps1
+        else
+          .github/scripts/json-schema-drift-check.sh
+        fi
 
   validate-cyclonedx-schema:
     desc: Run integration tests
     cmds:
-      - "cd schema/cyclonedx && make"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd schema{{.PATH_SEPARATOR}}cyclonedx && make
+        else
+          cd schema/cyclonedx && make
+        fi
 
   validate-grype-db-schema:
     desc: Ensure the codebase is only referencing a single grype-db schema version (multiple is not allowed)
     cmds:
-      - python test/validate-grype-db-schema.py
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          python test{{.PATH_SEPARATOR}}validate-grype-db-schema.py
+        else
+          python test/validate-grype-db-schema.py
+        fi
 
 
   ## Testing tasks #################################
@@ -196,21 +275,31 @@ tasks:
       - tmpdir
     vars:
       TEST_PKGS:
-        sh: "go list ./... | grep -v {{ .OWNER }}/{{ .PROJECT }}/test | grep -v {{ .OWNER }}/{{ .PROJECT }}/internal/test | tr '\n' ' '"
+        sh: |
+          if [ "{{.OS}}" = "windows" ]; then
+            go list .{{.PATH_SEPARATOR}}... | grep -v {{.OWNER}}{{.PATH_SEPARATOR}}{{.PROJECT}}{{.PATH_SEPARATOR}}test | grep -v {{.OWNER}}{{.PATH_SEPARATOR}}{{.PROJECT}}{{.PATH_SEPARATOR}}internal{{.PATH_SEPARATOR}}test | tr '\n' ' '
+          else
+            go list ./... | grep -v {{.OWNER}}/{{.PROJECT}}/test | grep -v {{.OWNER}}/{{.PROJECT}}/internal/test | tr '\n' ' '
+          fi
 
       # unit test coverage threshold (in % coverage)
       COVERAGE_THRESHOLD: 47
     cmds:
-      - "go test -coverprofile {{ .TMP_DIR }}/unit-coverage-details.txt {{ .TEST_PKGS }}"
-      - cmd: ".github/scripts/coverage.py {{ .COVERAGE_THRESHOLD }} {{ .TMP_DIR }}/unit-coverage-details.txt"
+      - "go test -coverprofile {{.TMP_DIR}}{{.PATH_SEPARATOR}}unit-coverage-details.txt {{.TEST_PKGS}}"
+      - cmd: |
+          if [ "{{.OS}}" = "windows" ]; then
+            python .github{{.PATH_SEPARATOR}}scripts{{.PATH_SEPARATOR}}coverage.py {{.COVERAGE_THRESHOLD}} {{.TMP_DIR}}{{.PATH_SEPARATOR}}unit-coverage-details.txt
+          else
+            .github/scripts/coverage.py {{.COVERAGE_THRESHOLD}} {{.TMP_DIR}}/unit-coverage-details.txt
+          fi
         silent: true
 
   integration:
     desc: Run integration tests
     cmds:
-      - "go test -v ./test/integration"
+      - "go test -v .{{.PATH_SEPARATOR}}test{{.PATH_SEPARATOR}}integration"
       # exercise most of the CLI with the data race detector
-      - "go run -race cmd/{{ .PROJECT }}/main.go alpine:latest"
+      - "go run -race cmd{{.PATH_SEPARATOR}}{{.PROJECT}}{{.PATH_SEPARATOR}}main.go alpine:latest"
 
   cli:
     desc: Run CLI tests
@@ -219,22 +308,34 @@ tasks:
     # and local checksums will not line up.
     deps: [tools, snapshot]
     sources:
-      - "{{ .SNAPSHOT_BIN }}"
-      - ./test/cli/**
-      - ./**/*.go
+      - "{{.SNAPSHOT_BIN}}"
+      - .{{.PATH_SEPARATOR}}test{{.PATH_SEPARATOR}}cli{{.PATH_SEPARATOR}}**
+      - .{{.PATH_SEPARATOR}}**{{.PATH_SEPARATOR}}*.go
     cmds:
-      - cmd: "echo 'testing binary: {{ .SNAPSHOT_BIN }}'"
+      - cmd: "echo 'testing binary: {{.SNAPSHOT_BIN}}'"
         silent: true
 
-      - cmd: "test -f {{ .SNAPSHOT_BIN }} || (find {{ .SNAPSHOT_DIR }} && echo '\nno snapshot found' && false)"
+      - cmd: |
+          if [ "{{.OS}}" = "windows" ]; then
+            if [ ! -f "{{.SNAPSHOT_BIN}}" ]; then
+              find {{.SNAPSHOT_DIR}} && echo -e "\nno snapshot found" && exit 1
+            fi
+          else
+            test -f {{.SNAPSHOT_BIN}} || (find {{.SNAPSHOT_DIR}} && echo '\nno snapshot found' && false)
+          fi
         silent: true
 
-      - "go test -count=1 -timeout=15m -v ./test/cli"
+      - "go test -count=1 -timeout=15m -v .{{.PATH_SEPARATOR}}test{{.PATH_SEPARATOR}}cli"
 
   quality:
     desc: Run quality tests
     cmds:
-      - "cd test/quality && make"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}quality && make
+        else
+          cd test/quality && make
+        fi
 
 
   ## Test-fixture-related targets #################################
@@ -242,55 +343,104 @@ tasks:
   fingerprints:
     desc: Generate test fixture fingerprints
     generates:
-      - test/integration/test-fixtures/cache.fingerprint
-      - test/install/cache.fingerprint
-      - test/cli/test-fixtures/cache.fingerprint
+      - test{{.PATH_SEPARATOR}}integration{{.PATH_SEPARATOR}}test-fixtures{{.PATH_SEPARATOR}}cache.fingerprint
+      - test{{.PATH_SEPARATOR}}install{{.PATH_SEPARATOR}}cache.fingerprint
+      - test{{.PATH_SEPARATOR}}cli{{.PATH_SEPARATOR}}test-fixtures{{.PATH_SEPARATOR}}cache.fingerprint
     cmds:
       # for IMAGE integration test fixtures
-      - "cd test/integration/test-fixtures && make cache.fingerprint"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}integration{{.PATH_SEPARATOR}}test-fixtures && make cache.fingerprint
+        else
+          cd test/integration/test-fixtures && make cache.fingerprint
+        fi
       # for INSTALL integration test fixtures
-      - "cd test/install && make cache.fingerprint"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}install && make cache.fingerprint
+        else
+          cd test/install && make cache.fingerprint
+        fi
       # for CLI test fixtures
-      - "cd test/cli/test-fixtures && make cache.fingerprint"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}cli{{.PATH_SEPARATOR}}test-fixtures && make cache.fingerprint
+        else
+          cd test/cli/test-fixtures && make cache.fingerprint
+        fi
 
   show-test-image-cache:
     silent: true
     cmds:
       - "echo '\nDocker daemon cache:'"
-      - "docker images --format '{{`{{.ID}}`}} {{`{{.Repository}}`}}:{{`{{.Tag}}`}}' | grep stereoscope-fixture- | sort"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          docker images --format "ID: {{`{{.ID}}`}} Repo: {{`{{.Repository}}`}}:{{`{{.Tag}}`}}" | findstr "stereoscope-fixture-" | sort
+        else
+          docker images --format '{{`{{.ID}}`}} {{`{{.Repository}}`}}:{{`{{.Tag}}`}}' | grep stereoscope-fixture- | sort
+        fi
       - "echo '\nTar cache:'"
-      - 'find . -type f -wholename "**/test-fixtures/snapshot/*" | sort'
-
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          powershell -Command "Get-ChildItem -Path . -Recurse -File | Where-Object { $_.FullName -like '*test-fixtures{{.PATH_SEPARATOR}}snapshot{{.PATH_SEPARATOR}}*' } | Select-Object -ExpandProperty FullName | Sort-Object"
+        else
+          find . -type f -wholename "**/test-fixtures/snapshot/*" | sort
+        fi
 
   ## install.sh testing targets #################################
 
   install-test:
     cmds:
-      - "cd test/install && make"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}install && make
+        else
+          cd test/install && make
+        fi
 
   install-test-cache-save:
     cmds:
-      - "cd test/install && make save"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}install && make save
+        else
+          cd test/install && make save
+        fi
 
   install-test-cache-load:
     cmds:
-      - "cd test/install && make load"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}install && make load
+        else
+          cd test/install && make load
+        fi
 
   install-test-ci-mac:
     cmds:
-      - "cd test/install && make ci-test-mac"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd test{{.PATH_SEPARATOR}}install && make ci-test-mac
+        else
+          cd test/install && make ci-test-mac
+        fi
 
   generate-compare-file:
-    cmd: "go run ./cmd/{{ .PROJECT }} {{ .COMPARE_TEST_IMAGE }} -o json > {{ .COMPARE_DIR }}/test-fixtures/acceptance-{{ .COMPARE_TEST_IMAGE }}.json"
+    cmd: |
+      if [ "{{.OS}}" = "windows" ]; then
+        go run .{{.PATH_SEPARATOR}}cmd{{.PATH_SEPARATOR}}{{.PROJECT}} {{.COMPARE_TEST_IMAGE}} -o json > {{.COMPARE_DIR}}{{.PATH_SEPARATOR}}test-fixtures{{.PATH_SEPARATOR}}acceptance-{{.COMPARE_TEST_IMAGE}}.json
+      else
+        go run ./cmd/{{.PROJECT}} {{.COMPARE_TEST_IMAGE}} -o json > {{.COMPARE_DIR}}/test-fixtures/acceptance-{{.COMPARE_TEST_IMAGE}}.json
+      fi
 
   compare-mac:
     deps: [tmpdir]
     cmd: |
-      {{ .COMPARE_DIR }}/mac.sh \
-        {{ .SNAPSHOT_DIR }} \
-        {{ .COMPARE_DIR }} \
-        {{ .COMPARE_TEST_IMAGE }} \
-        {{ .TMP_DIR }}
+      if [ "{{.OS}}" = "windows" ]; then
+        powershell -ExecutionPolicy Bypass -File {{.COMPARE_DIR}}{{.PATH_SEPARATOR}}mac.ps1 {{.SNAPSHOT_DIR}} {{.COMPARE_DIR}} {{.COMPARE_TEST_IMAGE}} {{.TMP_DIR}}
+      else
+        {{.COMPARE_DIR}}/mac.sh {{.SNAPSHOT_DIR}} {{.COMPARE_DIR}} {{.COMPARE_TEST_IMAGE}} {{.TMP_DIR}}
+      fi
 
   compare-linux:
     cmds:
@@ -300,20 +450,20 @@ tasks:
   compare-test-deb-package-install:
     deps: [tmpdir]
     cmd: |
-      {{ .COMPARE_DIR }}/deb.sh \
-        {{ .SNAPSHOT_DIR }} \
-        {{ .COMPARE_DIR }} \
-        {{ .COMPARE_TEST_IMAGE }} \
-        {{ .TMP_DIR }}
+      if [ "{{.OS}}" = "windows" ]; then
+        powershell -ExecutionPolicy Bypass -File {{.COMPARE_DIR}}{{.PATH_SEPARATOR}}deb.ps1 {{.SNAPSHOT_DIR}} {{.COMPARE_DIR}} {{.COMPARE_TEST_IMAGE}} {{.TMP_DIR}}
+      else
+        {{.COMPARE_DIR}}/deb.sh {{.SNAPSHOT_DIR}} {{.COMPARE_DIR}} {{.COMPARE_TEST_IMAGE}} {{.TMP_DIR}}
+      fi
 
   compare-test-rpm-package-install:
     deps: [tmpdir]
     cmd: |
-      {{ .COMPARE_DIR }}/rpm.sh \
-        {{ .SNAPSHOT_DIR }} \
-        {{ .COMPARE_DIR }} \
-        {{ .COMPARE_TEST_IMAGE }} \
-        {{ .TMP_DIR }}
+      if [ "{{.OS}}" = "windows" ]; then
+        powershell -ExecutionPolicy Bypass -File {{.COMPARE_DIR}}{{.PATH_SEPARATOR}}rpm.ps1 {{.SNAPSHOT_DIR}} {{.COMPARE_DIR}} {{.COMPARE_TEST_IMAGE}} {{.TMP_DIR}}
+      else
+        {{.COMPARE_DIR}}/rpm.sh {{.SNAPSHOT_DIR}} {{.COMPARE_DIR}} {{.COMPARE_TEST_IMAGE}} {{.TMP_DIR}}
+      fi
 
 
   ## Code and data generation targets #################################
@@ -327,10 +477,19 @@ tasks:
     desc: Generate a new JSON schema
     cmds:
       # re-generate package metadata
-      - "cd grype/internal && go generate"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd grype{{.PATH_SEPARATOR}}internal && go generate
+        else
+          cd grype/internal && go generate
+        fi
       # generate the JSON schema for the CLI output
-      - "cd cmd/grype/cli/commands/internal/jsonschema && go run ."
-
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          cd cmd{{.PATH_SEPARATOR}}grype{{.PATH_SEPARATOR}}cli{{.PATH_SEPARATOR}}commands{{.PATH_SEPARATOR}}internal{{.PATH_SEPARATOR}}jsonschema && go run .
+        else
+          cd cmd/grype/cli/commands/internal/jsonschema && go run .
+        fi
 
   ## Build-related targets #################################
 
@@ -338,14 +497,19 @@ tasks:
     desc: Build the project
     deps: [tools, tmpdir]
     generates:
-      - "{{ .PROJECT }}"
+      - "{{.PROJECT}}"
     cmds:
       - silent: true
         cmd: |
-          echo "dist: {{ .SNAPSHOT_DIR }}" > {{ .TMP_DIR }}/goreleaser.yaml
-          cat .goreleaser.yaml >> {{ .TMP_DIR }}/goreleaser.yaml
+          if [ "{{.OS}}" = "windows" ]; then
+            echo "dist: {{.SNAPSHOT_DIR}}" > {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml
+            type .goreleaser.yaml >> {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml
+          else
+            echo "dist: {{.SNAPSHOT_DIR}}" > {{.TMP_DIR}}/goreleaser.yaml
+            cat .goreleaser.yaml >> {{.TMP_DIR}}/goreleaser.yaml
+          fi
 
-      - "{{ .BUILD_CMD }}"
+      - "{{.BUILD_CMD}}"
 
   snapshot:
     desc: Create a snapshot release
@@ -353,29 +517,34 @@ tasks:
       - build
     deps: [tools, tmpdir]
     sources:
-      - cmd/**/*.go
-      - "{{ .PROJECT }}/**/*.go"
-      - internal/**/*.go
+      - cmd{{.PATH_SEPARATOR}}**{{.PATH_SEPARATOR}}*.go
+      - "{{.PROJECT}}{{.PATH_SEPARATOR}}**{{.PATH_SEPARATOR}}*.go"
+      - internal{{.PATH_SEPARATOR}}**{{.PATH_SEPARATOR}}*.go
     method: checksum
     generates:
-      - "{{ .SNAPSHOT_BIN }}"
+      - "{{.SNAPSHOT_BIN}}"
     cmds:
       - silent: true
         cmd: |
-          echo "dist: {{ .SNAPSHOT_DIR }}" > {{ .TMP_DIR }}/goreleaser.yaml
-          cat .goreleaser.yaml >> {{ .TMP_DIR }}/goreleaser.yaml
+          if [ "{{.OS}}" = "windows" ]; then
+            echo "dist: {{.SNAPSHOT_DIR}}" > {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml
+            type .goreleaser.yaml >> {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml
+          else
+            echo "dist: {{.SNAPSHOT_DIR}}" > {{.TMP_DIR}}/goreleaser.yaml
+            cat .goreleaser.yaml >> {{.TMP_DIR}}/goreleaser.yaml
+          fi
 
-      - "{{ .SNAPSHOT_CMD }}"
+      - "{{.SNAPSHOT_CMD}}"
 
   changelog:
     desc: Generate a changelog
     deps: [tools]
     generates:
-      - "{{ .CHANGELOG }}"
-      - "{{ .NEXT_VERSION }}"
+      - "{{.CHANGELOG}}"
+      - "{{.NEXT_VERSION}}"
     cmds:
-      - "{{ .TOOL_DIR }}/chronicle -vv -n --version-file {{ .NEXT_VERSION }} > {{ .CHANGELOG }}"
-      - "{{ .TOOL_DIR }}/glow -w 0 {{ .CHANGELOG }}"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}chronicle -vv -n --version-file {{.NEXT_VERSION}} > {{.CHANGELOG}}"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}glow -w 0 {{.CHANGELOG}}"
 
 
   ## Release targets #################################
@@ -385,7 +554,12 @@ tasks:
     interactive: true
     deps: [tools]
     cmds:
-      - cmd: .github/scripts/trigger-release.sh
+      - cmd: |
+          if [ "{{.OS}}" = "windows" ]; then
+            powershell -ExecutionPolicy Bypass -File .github{{.PATH_SEPARATOR}}scripts{{.PATH_SEPARATOR}}trigger-release.ps1
+          else
+            .github/scripts/trigger-release.sh
+          fi
         silent: true
 
 
@@ -394,7 +568,12 @@ tasks:
   ci-check:
     # desc: "[CI only] Are you in CI?"
     cmds:
-      - cmd: .github/scripts/ci-check.sh
+      - cmd: |
+          if [ "{{.OS}}" = "windows" ]; then
+            powershell -ExecutionPolicy Bypass -File .github{{.PATH_SEPARATOR}}scripts{{.PATH_SEPARATOR}}ci-check.ps1
+          else
+            .github/scripts/ci-check.sh
+          fi
         silent: true
 
   ci-release:
@@ -402,17 +581,22 @@ tasks:
     deps: [tools]
     cmds:
       - task: ci-check
-      - "{{ .TOOL_DIR }}/chronicle -vvv > CHANGELOG.md"
+      - "{{.TOOL_DIR}}{{.PATH_SEPARATOR}}chronicle -vvv > CHANGELOG.md"
       - cmd: "cat CHANGELOG.md"
         silent: true
-      - "{{ .RELEASE_CMD }}"
+      - "{{.RELEASE_CMD}}"
 
   ci-release-version-file:
     # desc: "[CI only] Update the version file"
     deps: [tools]
     cmds:
       - task: ci-check
-      - ".github/scripts/update-version-file.sh {{ .RELEASE_VERSION }}"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          powershell -ExecutionPolicy Bypass -File .github{{.PATH_SEPARATOR}}scripts{{.PATH_SEPARATOR}}update-version-file.ps1 {{.RELEASE_VERSION}}
+        else
+          .github/scripts/update-version-file.sh {{.RELEASE_VERSION}}
+        fi
     requires:
       vars:
         - RELEASE_VERSION
@@ -421,13 +605,17 @@ tasks:
     # desc: "[CI only] Ensure the update URL is not overridden (not pointing to staging)"
     silent: true
     cmd: |
-      bash -c '\
-        grep -q "update-url" test/grype-test-config.yaml; \
-        if [ $? -eq 0 ]; then \
-          echo "Found \"update-url\" in CLI testing config. Cannot release if previous CLI testing did not use production (default) values"; \
-        else
-          echo "Test configuration valid"
-        fi'
+      if [ "{{.OS}}" = "windows" ]; then
+        powershell -Command "if (Select-String -Path test{{.PATH_SEPARATOR}}grype-test-config.yaml -Pattern 'update-url') { Write-Host 'Found \"update-url\" in CLI testing config. Cannot release if previous CLI testing did not use production (default) values' } else { Write-Host 'Test configuration valid' }"
+      else
+        bash -c '\
+          grep -q "update-url" test/grype-test-config.yaml; \
+          if [ $? -eq 0 ]; then \
+            echo "Found \"update-url\" in CLI testing config. Cannot release if previous CLI testing did not use production (default) values"; \
+          else
+            echo "Test configuration valid"
+          fi'
+      fi
 
 
   ## Cleanup targets #################################
@@ -435,11 +623,28 @@ tasks:
   clean-snapshot:
     desc: Remove any snapshot builds
     cmds:
-      - "rm -rf {{ .SNAPSHOT_DIR }}"
-      - "rm -rf {{ .TMP_DIR }}/goreleaser.yaml"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          if exist {{.SNAPSHOT_DIR}} rmdir /s /q {{.SNAPSHOT_DIR}}
+          if exist {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml del {{.TMP_DIR}}{{.PATH_SEPARATOR}}goreleaser.yaml
+        else
+          rm -rf {{.SNAPSHOT_DIR}}
+          rm -rf {{.TMP_DIR}}/goreleaser.yaml
+        fi
 
   clean-cache:
     desc: Remove all docker cache and local image tar cache
     cmds:
-      - 'find . -type f -wholename "**/test-fixtures/cache/stereoscope-fixture-*.tar" -delete'
-      - "docker images --format '{{`{{.ID}}`}} {{`{{.Repository}}`}}' | grep stereoscope-fixture- | awk '{print $$1}' | uniq | xargs -r docker rmi --force"
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          powershell -Command "Get-ChildItem -Path . -Recurse -File | Where-Object { $_.FullName -like '*test-fixtures{{.PATH_SEPARATOR}}cache{{.PATH_SEPARATOR}}stereoscope-fixture-*.tar' } | Remove-Item -Force"
+        else
+          find . -type f -wholename "**/test-fixtures/cache/stereoscope-fixture-*.tar" -delete
+        fi
+      - |
+        if [ "{{.OS}}" = "windows" ]; then
+          FOR /F "tokens=1,2" %i IN ('docker images --format "{{`{{.ID}}`}} {{`{{.Repository}}`}}" ^| findstr stereoscope-fixture-') DO docker rmi --force %i
+        else
+          docker images --format '{{`{{.ID}}`}} {{`{{.Repository}}`}}' | grep stereoscope-fixture- | awk '{print $1}' | uniq | xargs -r docker rmi --force
+        fi
+```

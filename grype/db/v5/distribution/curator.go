@@ -489,6 +489,11 @@ func (c Curator) ListingFromURL() (Listing, error) {
 		return Listing{}, fmt.Errorf("unable to download listing: %w", err)
 	}
 
+	// explicitly close the file so that the deferred removal can succeed on Windows
+    if err := tempFile.Close(); err != nil {
+        log.Warnf("failed to close temp file: %s", err)
+    }
+
 	// parse the listing file
 	listing, err := NewListingFromFile(c.fs, tempFile.Name())
 	if err != nil {
