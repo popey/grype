@@ -22,7 +22,7 @@ jobs:
           
       - name: Build and Run Grype
         run: |
-          set
+          echo %cd%
           dir .
           go version
           go run .\cmd\grype version
