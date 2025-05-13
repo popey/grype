@@ -24,7 +24,7 @@ jobs:
         run: |
           git clone https://github.com/anchore/binny tmp-binny
           cd tmp-binny
-          go build cmd\binny
+          go build .\cmd\binny
           cd ..
           mkdir .tool
           copy tmp-binny\binny .tool\binny
