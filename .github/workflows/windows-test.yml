@@ -19,7 +19,16 @@ jobs:
         uses: actions/setup-go@v5.5.0
         with:
           go-version: '>=1.24.2'
-          
+
+      - name: Setup binny # currently no releases of binny for windows
+        run: |
+          git clone https://github.com/anchore/binny tmp-binny
+          cd tmp-binny
+          go build cmd\binny
+          cd ..
+          mkdir .tool
+          copy tmp-binny\binny .tool\binny
+
       - name: Build and Run Grype
         run: |
           gci env:* | sort-object name
