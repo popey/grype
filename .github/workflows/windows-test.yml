@@ -25,9 +25,10 @@ jobs:
           git clone https://github.com/anchore/binny tmp-binny
           cd tmp-binny
           go build .\cmd\binny
+          dir 
           cd ..
           mkdir .tool
-          copy tmp-binny\binny .tool\binny
+          copy .\tmp-binny\binny .tool\binny
 
       - name: Build and Run Grype
         run: |
